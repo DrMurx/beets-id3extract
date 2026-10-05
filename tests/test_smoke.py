@@ -4,7 +4,7 @@ from beets.library import Item
 
 
 def test_plugin_instantiates_with_empty_config(plugin):
-    assert plugin().mappings == []
+    assert plugin().item_types == {}
 
 
 def test_fixtures_work_together(plugin, lib, mp3_factory):
@@ -14,9 +14,9 @@ def test_fixtures_work_together(plugin, lib, mp3_factory):
     item = Item.from_path(bytes(path))
     lib.add(item)
 
-    assert item["woas"] == "https://example.com/a"
+    assert item["track_id"] == "https://example.com/a"
 
 
 def test_plugin_registrations_are_undone():
-    assert "woas" not in vars(mediafile.MediaFile)
-    assert "woas" not in Item._media_fields
+    assert "track_id" not in vars(mediafile.MediaFile)
+    assert "track_id" not in Item._media_fields

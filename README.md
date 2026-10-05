@@ -1,12 +1,12 @@
 # ID3Extract Plugin for beets
 
-A [beets](https://beets.io) plugin that maps arbitrary ID3 tags to beets custom fields. This plugin is particularly useful for preserving custom ID3 tags during your music library management with beets.
+A [beets](https://beets.io) plugin that maps ID3 text and URL frames to beets custom fields, in both directions. This plugin is particularly useful for preserving tags that beets ignores during your music library management with beets.
 
 ## Use Cases
 
-- Extract Spotify track IDs from WOAS (Work Of Art Source) ID3 tags
-- Preserve custom ID3 tags in your beets database
-- Synchronize ID3 tags with beets fields during import and write operations
+- Keep a streaming or store URL from a URL frame such as `WOAS` in your beets database
+- Preserve ID3 text frames that beets ignores, such as `TMOO` (mood)
+- Edit those values with `beet modify` and have them written back to the files
 
 ## Installation
 
@@ -31,61 +31,83 @@ plugins:
 
 ## Configuration
 
-Configure the plugin by adding an `id3extract` section to your `config.yaml`. Define mappings between ID3 tags and beets fields:
+Add an `id3extract` section to your `config.yaml` and list the beets fields you want, each with the tag it is stored in:
+
+```yaml
+id3extract:
+    fields:
+        spotify_url: WOAS       # short form: <beets field>: <tag>
+        mood: TMOO
+        energy:                 # long form
+            tag: TDLY
+            type: int
+```
+
+Each entry consists of:
+- Key: the beets field. It must not be a field beets already has (`title`, `initial_key`, ...).
+- Value: either the tag, or a mapping with these options:
+
+| Option | Meaning |
+| --- | --- |
+| `tag` | The tag to read and write. Required. |
+| `type` | `str` (default), `int`, `float` or `bool`. Typed fields can be queried and sorted numerically, for example `beet ls energy:5..`. |
+
+### Tags
+
+A tag is the ID of an ID3 frame, in upper or lower case:
+
+- text frames (`T***`, for example `TMOO`), except `TXXX`
+- URL frames (`W***`, for example `WOAS`), except `WXXX`
+
+Other frames, including `TXXX:<description>`, are not supported yet. Each tag can be mapped to one field only.
+
+On MP4 files the tag is stored as the freeform atom `----:com.apple.iTunes:<TAG>`, and on Vorbis-style formats (FLAC, Ogg, APE, ...) as a comment named `<TAG>`.
+
+Avoid tags that beets already uses for a field of its own, such as `TKEY` (`initial_key`) or `TBPM` (`bpm`). Both fields are then written to the same frame, and if their values differ it is not defined which one ends up in the file. The plugin logs a warning for such a tag.
+
+### Migrating from `mappings`
+
+Earlier versions were configured the other way round, with `<tag>: <beets field>` entries under `mappings`:
 
 ```yaml
 id3extract:
     mappings:
-        WOAS: track_id      # Maps WOAS ID3 tag to track_id field
-        CUSTOM: custom_field # Maps any custom ID3 tag to a beets field
+        WOAS: track_id
 ```
 
-Each mapping consists of:
-- Key: The ID3 tag name (e.g., 'WOAS')
-- Value: The beets field to store the tag value in
+This still works but is deprecated and logs a warning. Move each entry to `fields` with key and value swapped:
 
-## Special Features
-
-### Spotify ID Extraction
-
-When mapping the WOAS tag, if the value is a Spotify track URL, the plugin automatically extracts just the Spotify ID:
-
+```yaml
+id3extract:
+    fields:
+        track_id: WOAS
 ```
-WOAS: "https://open.spotify.com/track/2BOUrjXoRIo2YHVAyZyXVX"
-↓
-track_id: "2BOUrjXoRIo2YHVAyZyXVX"
-```
+
+Differences to be aware of:
+
+- A `WOAS` entry under `mappings` still reduces a Spotify track URL (`https://open.spotify.com/track/2BOUrjXoRIo2YHVAyZyXVX`) to the track ID (`2BOUrjXoRIo2YHVAyZyXVX`). Under `fields` the URL is stored unchanged.
+- Tags that are not ID3 text or URL frame IDs are now rejected.
+- Earlier versions also created a field named after the tag (for example `woas`). It is no longer filled; remove leftovers with `beet modify 'woas!'`.
 
 ## Operation
 
-The plugin operates at three key points:
+Each configured field becomes a regular beets media field, so beets keeps it in sync with the file like its built-in fields:
 
-1. **During Import** (both singleton and album imports):
-   - Reads configured ID3 tags from the audio files
-   - Stores their values in the specified beets fields
-   - Handles special cases like Spotify URL extraction
-
-2. **During Write Operations**:
-   - When beets writes tags to files
-   - Ensures custom fields are written back to their corresponding ID3 tags
-
-3. **Database Storage**:
-   - All mapped values are stored in the beets database
-   - Preserved across library operations
+- **`beet import`** reads the tag into the field.
+- **`beet update`** re-reads the tag from files that changed on disk. Use it to pick up tags edited with another program. Files whose modification time has not changed are skipped, so items imported before a field was configured only get it once their file changes.
+- **`beet modify mood=calm`** changes the field and writes the tag.
+- **`beet write`** writes the field to the tag.
+- **`beet modify 'mood!'`** removes the field from the database only; the tag stays in the file.
 
 ## Debugging
 
-Run beets with the verbose flag to see detailed logging:
+A configuration mistake is reported when beets starts, naming the offending key, for example `id3extract.fields.mood: unknown ID3 frame 'TMOX'`. Recent beets versions then continue without the plugin.
+
+Run beets with the verbose flag to see which fields are registered:
 
 ```bash
-beet -v import path/to/music
+beet -v ls
 ```
-
-This will show:
-- Which tags are found/not found
-- Values being extracted
-- Spotify ID extraction (when applicable)
-- Write operations
 
 ## Requirements
 
@@ -100,7 +122,8 @@ To set up a development environment:
 ```bash
 git clone https://github.com/your-username/beets-id3extract.git
 cd beets-id3extract
-pip install -e .
+pip install -e ".[dev]"
+pytest
 ```
 
 ## Contributing
