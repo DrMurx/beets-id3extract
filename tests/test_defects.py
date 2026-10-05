@@ -6,22 +6,8 @@ removed.
 """
 
 import pytest
-from helpers import SPOTIFY_URL, import_item, read_frames, write_item
-from mutagen.id3 import TXXX, WOAS
-
-# URL round trip
-
-
-@pytest.mark.xfail(strict=True, reason="fixed in step 3")
-def test_spotify_url_survives_import_and_write(plugin, lib, mp3_factory):
-    plugin({"mappings": {"WOAS": "track_id"}})
-    path = mp3_factory(WOAS(url=SPOTIFY_URL))
-
-    item = import_item(lib, path)
-    write_item(item)
-
-    assert read_frames(path)["WOAS"].url == SPOTIFY_URL
-
+from helpers import import_item, read_frames, write_item
+from mutagen.id3 import TXXX
 
 # TXXX frames
 

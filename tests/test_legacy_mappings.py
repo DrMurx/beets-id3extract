@@ -150,7 +150,27 @@ def test_write_stores_field_in_mapped_frame(plugin, lib, mp3_factory):
     item["track_id"] = SPOTIFY_ID
     write_item(item)
 
-    assert read_frames(path)["WOAS"].url == SPOTIFY_ID
+    assert read_frames(path)["WOAS"].url == SPOTIFY_URL
+
+
+def test_spotify_url_survives_import_and_write(plugin, lib, mp3_factory):
+    plugin({"mappings": {"WOAS": "track_id"}})
+    path = mp3_factory(WOAS(url=SPOTIFY_URL))
+
+    item = import_item(lib, path)
+    write_item(item)
+
+    assert read_frames(path)["WOAS"].url == SPOTIFY_URL
+
+
+def test_non_spotify_url_survives_import_and_write(plugin, lib, mp3_factory):
+    plugin({"mappings": {"WOAS": "track_id"}})
+    path = mp3_factory(WOAS(url="https://example.com/track/42"))
+
+    item = import_item(lib, path)
+    write_item(item)
+
+    assert read_frames(path)["WOAS"].url == "https://example.com/track/42"
 
 
 def test_write_without_value_adds_no_frame(plugin, lib, mp3_factory):

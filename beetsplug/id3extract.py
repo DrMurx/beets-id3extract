@@ -20,6 +20,13 @@ Configuration:
                 energy:                 # long form
                     tag: TDLY
                     type: int           # str (default), int, float or bool
+                spotify_track_id:
+                    tag: WOAS
+                    url: spotify-track  # keep only the ID of the URL
+                shop_id:
+                    tag: WPAY
+                    extract: '^https://shop[.]example/item/(?P<id>[0-9]+)'
+                    format: 'https://shop.example/item/{id}'
 
     A tag is the ID of an ID3 text frame (T***) or URL frame (W***). TXXX and
     WXXX frames are not supported yet. On MP4 files the tag is stored as
@@ -28,10 +35,17 @@ Configuration:
     A field or tag that beets already uses itself aborts beets. For a tag
     this can be overridden per field with `share_tag: yes`.
 
+    `extract` is a regular expression with a named group `id`. A tag value it
+    matches is reduced to that group; any other value is kept as it is.
+    `format` is the reverse: a template in which `{id}` is replaced by the
+    field value when the tag is written. Without `format` the field is
+    read-only. `url` selects a built-in pair of the two (see `URL_PRESETS`).
+
     The former `mappings` option (`<tag>: <beets field>`) is deprecated but
-    still read. A `WOAS` mapping keeps reducing Spotify track URLs to the
-    track ID.
+    still read. A `WOAS` mapping is treated as `url: spotify-track`.
 """
+
+import re
 
 import confuse
 import mutagen.id3
@@ -41,7 +55,13 @@ from beets.plugins import BeetsPlugin
 from beets.ui import UserError
 from mediafile import MediaField, MediaFile, MP3StorageStyle, MP4StorageStyle, StorageStyle
 
-SPOTIFY_TRACK_URL = 'https://open.spotify.com/track/'
+# Preset name -> (extract, format), selected with the `url` option.
+URL_PRESETS = {
+    'spotify-track': (
+        r'^https?://open\.spotify\.com/(?:intl-[a-z]+/)?track/(?P<id>[A-Za-z0-9]+)',
+        'https://open.spotify.com/track/{id}',
+    ),
+}
 
 
 class ConflictError(SystemExit):
@@ -102,6 +122,48 @@ def beets_field_for_frame(frame_id):
     return None
 
 
+class Transform:
+    """Converts between a tag value (such as a URL) and the ID kept in the field."""
+    def __init__(self, extract, format=None):
+        """Raise `ValueError` if `extract` or `format` is unusable."""
+        try:
+            self.pattern = re.compile(extract)
+        except re.error as exc:
+            raise ValueError(f"'extract' is not a valid regular expression: {exc}") from None
+        if 'id' not in self.pattern.groupindex:
+            raise ValueError("'extract' needs a named group (?P<id>...)")
+        if format is not None and '{id}' not in format:
+            raise ValueError("'format' needs the placeholder {id}")
+        self.template = format
+
+    @property
+    def read_only(self):
+        return self.template is None
+
+    def extract(self, value):
+        """Return the ID in a tag value, or `None` if the value is something else."""
+        match = self.pattern.search(value)
+        return match.group('id') if match and match.group('id') else None
+
+    def to_field(self, value):
+        """Convert a tag value to the field value."""
+        return self.extract(value) or value
+
+    def to_tag(self, value):
+        """Convert a field value to the tag value.
+
+        A value that is neither an ID nor something an ID can be extracted
+        from was read from the file as it is, and is written back as it is.
+        """
+        tag_id = self.extract(value)
+        if tag_id is not None:
+            return self.template.replace('{id}', tag_id)
+        formatted = self.template.replace('{id}', value)
+        if self.extract(formatted) == value:
+            return formatted
+        return value
+
+
 class MP3URLStorageStyle(MP3StorageStyle):
     """Storage for ID3 URL frames (like WOAS)."""
     def fetch(self, mutagen_file):
@@ -117,28 +179,35 @@ class MP3URLStorageStyle(MP3StorageStyle):
 
 class TagField(MediaField):
     """A media field for one configured tag."""
-    def __init__(self, kind, frame_id, out_type=str, spotify_id=False):
+    def __init__(self, kind, frame_id, out_type=str, transform=None):
+        self.transform = transform
+        self.read_only = transform is not None and transform.read_only
         mp3_style = MP3URLStorageStyle if kind == 'url' else MP3StorageStyle
         super(TagField, self).__init__(
-            mp3_style(frame_id),
-            MP4StorageStyle(f'----:com.apple.iTunes:{frame_id}'),
-            StorageStyle(frame_id),
+            mp3_style(frame_id, read_only=self.read_only),
+            MP4StorageStyle(f'----:com.apple.iTunes:{frame_id}', read_only=self.read_only),
+            StorageStyle(frame_id, read_only=self.read_only),
             out_type=out_type
         )
-        self.spotify_id = spotify_id
 
     def __get__(self, mediafile, owner=None):
         value = super(TagField, self).__get__(mediafile, owner)
-        # Legacy `mappings` behaviour: reduce a Spotify track URL to its ID.
-        if self.spotify_id and isinstance(value, str) and value.startswith(SPOTIFY_TRACK_URL):
-            value = value.split('/')[-1].split('?')[0]  # Handle potential query params
+        if self.transform and value is not None:
+            value = self.transform.to_field(value)
         return value
 
     def __set__(self, mediafile, value):
         # The storage styles round floats to two decimal places.
         if isinstance(value, float):
             value = repr(value)
+        if self.transform and not self.read_only and value is not None:
+            value = self.transform.to_tag(str(value))
         super(TagField, self).__set__(mediafile, value)
+
+    def __delete__(self, mediafile):
+        # The styles' `read_only` flag does not cover deletion.
+        if not self.read_only:
+            super(TagField, self).__delete__(mediafile)
 
 
 class ID3ExtractPlugin(BeetsPlugin):
@@ -156,7 +225,7 @@ class ID3ExtractPlugin(BeetsPlugin):
                     f"{key}: '{field}' is already a beets field; choose another field name"
                 )
 
-            unknown = set(options) - {'tag', 'type', 'share_tag', 'spotify_id'}
+            unknown = set(options) - {'tag', 'type', 'share_tag', 'url', 'extract', 'format'}
             if unknown:
                 raise UserError(f"{key}: unknown option '{sorted(unknown)[0]}'")
             tag = options.get('tag')
@@ -193,11 +262,40 @@ class ID3ExtractPlugin(BeetsPlugin):
                 )
             if owner:
                 self._log.debug("{}: sharing tag {} with the beets field '{}'", key, frame_id, owner)
-            media_fields[field] = TagField(kind, frame_id, out_type, options.get('spotify_id', False))
+
+            transform = self._transform(key, options)
+            if transform and out_type is not str:
+                raise UserError(f"{key}: 'url', 'extract' and 'format' need type str, not {type_name}")
+            if transform and transform.read_only:
+                self._log.warning("{}: 'extract' without 'format' makes the field read-only", key)
+            media_fields[field] = TagField(kind, frame_id, out_type, transform)
 
         for field, descriptor in media_fields.items():
             self._log.debug('Registering field {}', field)
             self.add_media_field(field, descriptor)
+
+    def _transform(self, key, options):
+        """Return the `Transform` configured by `url` or `extract`/`format`, if any."""
+        preset = options.get('url')
+        extract, template = options.get('extract'), options.get('format')
+        if preset is not None:
+            if extract is not None or template is not None:
+                raise UserError(f"{key}: 'url' cannot be combined with 'extract' or 'format'")
+            if preset not in URL_PRESETS:
+                raise UserError(
+                    f"{key}: unknown url preset '{preset}', expected one of {', '.join(URL_PRESETS)}"
+                )
+            extract, template = URL_PRESETS[preset]
+        if extract is None and template is None:
+            return None
+        if extract is None:
+            raise UserError(f"{key}: 'format' needs 'extract'")
+        if not isinstance(extract, str) or not isinstance(template, (str, type(None))):
+            raise UserError(f"{key}: 'extract' and 'format' must be strings")
+        try:
+            return Transform(extract, template)
+        except ValueError as exc:
+            raise UserError(f'{key}: {exc}') from None
 
     def _config_mapping(self, name):
         """Return the config section `name` as a dict."""
@@ -215,8 +313,6 @@ class ID3ExtractPlugin(BeetsPlugin):
                 value = {'tag': value}
             if not isinstance(value, dict):
                 raise UserError(f'{key}: expected a tag or a mapping of options')
-            if 'spotify_id' in value:
-                raise UserError(f"{key}: unknown option 'spotify_id'")
             fields[str(field)] = (key, dict(value))
 
         mappings = self._config_mapping('mappings')
@@ -229,5 +325,8 @@ class ID3ExtractPlugin(BeetsPlugin):
             tag, field = str(tag), str(field)
             if field in fields:
                 raise UserError(f"{key}: field '{field}' is configured more than once")
-            fields[field] = (key, {'tag': tag, 'spotify_id': tag.strip().upper() == 'WOAS'})
+            options = {'tag': tag}
+            if tag.strip().upper() == 'WOAS':
+                options['url'] = 'spotify-track'
+            fields[field] = (key, options)
         return fields

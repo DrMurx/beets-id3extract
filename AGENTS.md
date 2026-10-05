@@ -12,12 +12,13 @@ A [beets](https://beets.io) plugin that connects file tags (ID3 text and URL fra
 
 | Path | Purpose |
 | --- | --- |
-| `beetsplug/id3extract.py` | The whole plugin (~200 lines) |
+| `beetsplug/id3extract.py` | The whole plugin (~300 lines) |
 | `beetsplug/__init__.py` | `pkgutil` namespace package boilerplate. Do not add code here |
 | `tests/conftest.py` | Shared fixtures: `mp3_factory`, `plugin`, `lib` (see "Tests") |
 | `tests/helpers.py` | Test helpers: `import_item`, `import_album`, `write_item`, `read_frames` |
 | `tests/test_smoke.py` | Smoke tests for the plugin and the fixtures |
 | `tests/test_fields.py` | The `fields` option: round trips per tag kind and type, native sync, validation |
+| `tests/test_transforms.py` | `url`, `extract` and `format`: presets, the write rule, read-only fields, validation |
 | `tests/test_legacy_mappings.py` | The deprecated `mappings` option, including Spotify ID extraction |
 | `tests/test_defects.py` | Remaining known defects as strict xfail tests against the desired behaviour |
 | `pyproject.toml`, `setup.py` | Packaging and pytest configuration. Metadata (including the `dev` extra) is duplicated across both; keep them in sync |
@@ -53,16 +54,23 @@ id3extract:
         initial_key_raw:
             tag: TKEY
             share_tag: yes        # TKEY is already used by beets' initial_key
+        spotify_track_id:
+            tag: WOAS
+            url: spotify-track    # built-in extract/format pair
+        shop_id:
+            tag: WPAY
+            extract: '^https://shop[.]example/item/(?P<id>[0-9]+)'
+            format: 'https://shop.example/item/{id}'
     mappings:                     # deprecated: <tag>: <beets field>
         WOAS: track_id
 ```
 
 `ID3ExtractPlugin.__init__` does everything; the plugin has no listeners and no commands.
 
-1. `_configured_fields` merges `fields` and the legacy `mappings` into `{field: (config key, options)}`. The config key (`id3extract.fields.mood`, `id3extract.mappings.WOAS`) prefixes every error message. Any use of `mappings` logs a deprecation warning. A legacy entry whose tag is `WOAS` gets the internal option `spotify_id`, which users cannot set through `fields`.
+1. `_configured_fields` merges `fields` and the legacy `mappings` into `{field: (config key, options)}`. The config key (`id3extract.fields.mood`, `id3extract.mappings.WOAS`) prefixes every error message. Any use of `mappings` logs a deprecation warning. A legacy entry whose tag is `WOAS` gets `url: spotify-track`.
 2. Every entry is validated before anything is registered, so a bad config registers nothing.
    - Collisions with beets raise `ConflictError`, which derives from `SystemExit` so that beets' plugin loader cannot swallow it: beets prints `id3extract: error: …` and exits with status 1. There are two: the field is an attribute of `MediaFile` or a fixed `Item` field (`title`, `bitrate`, `path`, ...), or the tag is already used by a `MediaFile` field (`beets_field_for_frame`, for example `TKEY` → `initial_key`). The second one is skipped for a field with `share_tag: yes`; the first has no override. Legacy `mappings` entries cannot set `share_tag`.
-   - Everything else is a `UserError`: unknown option, missing `tag`, unknown `type`, non-boolean `share_tag`, a tag that does not parse (`parse_tag_spec`) or is already mapped to another configured field.
+   - Everything else is a `UserError`: unknown option, missing `tag`, unknown `type`, non-boolean `share_tag`, a tag that does not parse (`parse_tag_spec`) or is already mapped to another configured field, and the transform errors from `_transform` (unknown preset, `url` combined with `extract`/`format`, `format` without `extract`, invalid regex, no `id` group, no `{id}` placeholder, a transform on a non-`str` type).
 3. `parse_tag_spec` upper-cases the frame ID, looks it up in `mutagen.id3.Frames` and returns `(kind, frame_id, desc)`. `kind` is `text` for `T***` frames that are `TextFrame` subclasses and `url` for `W***` frames that are `UrlFrame` subclasses. `TXXX`, `WXXX`, anything with a `:` and every other frame (`COMM`, `TIPL`, `APIC`, ...) is rejected as not supported yet.
 4. Each field is registered under the **beets field name** through `add_media_field` with a `TagField`:
    - MP3: stock `MP3StorageStyle(frame_id)` for text, `MP3URLStorageStyle(frame_id)` for URL frames (overrides `fetch`/`store`);
@@ -71,14 +79,20 @@ id3extract:
 
    From then on beets syncs the field in `Item.read()` and `Item.write()`.
 5. `type` sets the `MediaField` `out_type` and, for anything but `str`, an entry in `item_types` so queries and sorting are numeric. The beets types are the null-preserving ones (`NullInteger`, `NULL_FLOAT`, the plugin's own `NullBoolean`): a file without the tag reads as `None`, and `None` is not written back. With `INTEGER` or `BOOLEAN` every such file would get a `0` tag on the next write.
-6. `TagField.__get__` implements the legacy Spotify behaviour (`spotify_id`): a value starting with `https://open.spotify.com/track/` is reduced to its last path segment without the query string. `TagField.__set__` turns floats into `repr()` strings, because the storage styles would round them to two decimals.
+6. A `Transform` (from `url`, which looks up `URL_PRESETS`, or from `extract`/`format`) converts between the tag value and the ID kept in the field. It lives in `TagField`, not in the storage styles, so it applies to every style of the field (MP3, MP4, Vorbis) and to any tag kind:
+   - `TagField.__get__` → `Transform.to_field`: if `extract` matches, the `id` group; otherwise the value unchanged.
+   - `TagField.__set__` → `Transform.to_tag`, in this order: the value matches `extract` (a URL was put into the field) → `format` of the extracted ID; `format(value)` extracts back to exactly `value` (it is an ID) → `format(value)`; otherwise (a foreign value that was read unchanged) → the value unchanged. The third case keeps the convention that a written tag reads back to the same database value.
+   - `extract` without `format` gives a read-only field: the styles get `read_only=True`, and `TagField.__delete__` does nothing, because the styles' flag does not block deletion. A warning is logged at startup.
+   - Transforms are limited to `type: str`: `MediaField.__get__` casts to `out_type` before `TagField` sees the value, so a URL would already be `0`.
+7. `TagField.__set__` also turns floats into `repr()` strings, because the storage styles would round them to two decimals.
 
 ## Tests
 
 Run `.venv/bin/pytest`. It must be green before and after every change. Only MP3 files are covered; the MP4 and Vorbis storage styles are untested.
 
 - `tests/test_fields.py` covers the `fields` option: read, unchanged write and changed write per tag kind and per `type`, `item.read()` after an edit outside beets, numeric queries, `ConflictError` for fields and tags beets uses itself, `share_tag`, and one parametrised case per validation error.
-- `tests/test_legacy_mappings.py` covers `mappings`: the deprecation warning, combination with `fields`, and Spotify ID extraction from `WOAS` (including query strings, and not for other frames).
+- `tests/test_transforms.py` covers `url`, `extract` and `format`. `PRESET_CASES` holds round-trip cases (URL in file → ID in database → canonical URL in file) for every entry of `URL_PRESETS`, and a test fails if a preset has none. Add cases whenever you add a preset, and only add presets whose URL shape you have verified.
+- `tests/test_legacy_mappings.py` covers `mappings`: the deprecation warning, combination with `fields`, and the Spotify round trip of a `WOAS` mapping (including query strings, and not for other frames).
 - `tests/test_defects.py` holds the entries of "Known defects" that have a planned fix, written against the *desired* behaviour and marked `@pytest.mark.xfail(strict=True, reason="fixed in step N")`. Because the marker is strict, the test fails as soon as the defect is fixed; in the change that fixes it, remove the marker and move the test to the regular suite. `pytest --runxfail tests/test_defects.py` shows how each one fails today.
 - Tests import, write and inspect files through `tests/helpers.py` (`import_item`, `write_item`, `read_frames`) rather than calling beets themselves.
 - Use frames beets does not own (`TMOO`, `TDLY`, `WOAS`, `WOAF`) unless the test is about the overlap; see "Known defects".
@@ -93,7 +107,9 @@ Fixtures in `tests/conftest.py`:
 
 All reproduced against the versions listed above.
 
-- **The legacy Spotify round trip is lossy.** With `mappings: {WOAS: field}` the URL is reduced to an ID on read, and the next write stores the bare ID in `WOAS`, replacing the URL. The bare ID reads back as the same ID, so database and file stay consistent. (xfail test)
+- **Transforms do not preserve the original URL.** The tag is rewritten in the `format` form, so a query string or alternative host is lost on the next write. This is intended.
+- **`extract` and `format` are not checked against each other.** If `format` produces something `extract` does not match, IDs are written bare without any warning.
+- **The `spotify-track` preset differs from the old inline code in edge cases.** The old code took the last path segment of anything starting with `https://open.spotify.com/track/`; the preset takes the first run of `[A-Za-z0-9]` after `/track/`. They agree on real track URLs.
 - **`TXXX:<DESC>` and `WXXX:<DESC>` are rejected** as not supported yet. (xfail tests)
 - **A tag shared through `share_tag: yes` is fought over.** Mapping, say, `TKEY` creates a second field next to beets' `initial_key`, and both are written to the same frame. `MediaFile.update` writes fields in alphabetical order, so the later name wins: with differing values, a field sorting before the beets field is overwritten by the stale beets value, and one sorting after it overwrites a `beet modify` of the beets field. A `None` in the later field deletes the frame. This is why sharing is refused by default.
 - **No field name validation.** A field name that beets cannot query (containing `:` or spaces) is accepted.
