@@ -15,7 +15,10 @@ A [beets](https://beets.io) plugin that connects file tags (mainly ID3 frames in
 | `beetsplug/id3extract.py` | The whole plugin (~120 lines) |
 | `beetsplug/__init__.py` | `pkgutil` namespace package boilerplate. Do not add code here |
 | `tests/conftest.py` | Shared fixtures: `mp3_factory`, `plugin`, `lib` (see "Tests") |
+| `tests/helpers.py` | Test helpers: `import_item`, `import_album`, `write_item`, `read_frames` |
 | `tests/test_smoke.py` | Smoke tests for the plugin and the fixtures |
+| `tests/test_current_behaviour.py` | Characterization tests for what the plugin does today |
+| `tests/test_defects.py` | Known defects as strict xfail tests against the desired behaviour |
 | `pyproject.toml`, `setup.py` | Packaging and pytest configuration. Metadata (including the `dev` extra) is duplicated across both; keep them in sync |
 | `README.md` | User documentation. Update it with every config or behaviour change |
 
@@ -56,7 +59,11 @@ For each mapping `TAG: field`, `ID3ExtractPlugin.__init__`:
 
 ## Tests
 
-Run `.venv/bin/pytest`. It must be green before and after every change. So far the suite only holds smoke tests; the plugin's behaviour is not covered yet.
+Run `.venv/bin/pytest`. It must be green before and after every change. Only MP3 files are covered; there are no FLAC or MP4 tests.
+
+- `tests/test_current_behaviour.py` pins what the code does today: config loading, Spotify ID extraction from `WOAS` (including query strings), non-Spotify URLs kept whole, the `item_imported` and `album_imported` listeners, and what `on_write` puts into `tags`. If a change alters one of these on purpose, change the test in the same commit.
+- `tests/test_defects.py` holds one test per entry it covers in "Known defects", written against the *desired* behaviour and marked `@pytest.mark.xfail(strict=True, reason="fixed in step N")`. Because the marker is strict, the test fails as soon as the defect is fixed; remove the marker in the change that fixes it. `pytest --runxfail tests/test_defects.py` shows how each one fails today.
+- Tests import, write and inspect files through `tests/helpers.py` (`import_item`, `import_album`, `write_item`, `read_frames`) rather than calling the plugin's listeners themselves, so a change to how the plugin hooks into import or write is made in the helpers once. The exceptions are the `on_write` tests, which call the listener directly.
 
 Fixtures in `tests/conftest.py`:
 
