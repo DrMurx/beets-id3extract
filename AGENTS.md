@@ -14,20 +14,23 @@ A [beets](https://beets.io) plugin that connects file tags (mainly ID3 frames in
 | --- | --- |
 | `beetsplug/id3extract.py` | The whole plugin (~120 lines) |
 | `beetsplug/__init__.py` | `pkgutil` namespace package boilerplate. Do not add code here |
-| `pyproject.toml`, `setup.py` | Packaging. Metadata is duplicated across both; keep them in sync |
+| `tests/conftest.py` | Shared fixtures: `mp3_factory`, `plugin`, `lib` (see "Tests") |
+| `tests/test_smoke.py` | Smoke tests for the plugin and the fixtures |
+| `pyproject.toml`, `setup.py` | Packaging and pytest configuration. Metadata (including the `dev` extra) is duplicated across both; keep them in sync |
 | `README.md` | User documentation. Update it with every config or behaviour change |
 
-There are no tests, CI or linter configuration.
+There is no CI or linter configuration.
 
 ## Environment
 
 Nothing is installed globally. Use a virtualenv:
 
 ```bash
-uv venv && uv pip install -e . pytest      # or: python3 -m venv .venv && .venv/bin/pip install -e . pytest
+uv venv && uv pip install -e ".[dev]"      # or: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
 ```
 
-Last verified against Python 3.14, beets 2.14.1, mediafile 0.17.0, mutagen 1.48.1. `pyproject.toml` declares `beets>=1.6.0` and Python ≥ 3.8; neither lower bound has been tested.
+Last verified against Python 3.13 and 3.14, beets 2.14.1, mediafile 0.17.0, mutagen 1.48.1. `pyproject.toml` declares `beets>=1.6.0` and Python ≥ 3.8; neither lower bound has been tested.
 
 Use the Context7 MCP (`/websites/beets_readthedocs_io_en_stable`) for beets API questions, or read the installed sources under `.venv/lib/python*/site-packages/{beets,mediafile,mutagen}`. The installed source is the authority.
 
@@ -51,6 +54,16 @@ For each mapping `TAG: field`, `ID3ExtractPlugin.__init__`:
 2. Listens to `item_imported` and `album_imported`. `process_item` reopens the file, reads the media field and copies it into the beets field. If the tag is exactly `WOAS` and the value starts with `https://open.spotify.com/track/`, only the track ID is kept.
 3. Listens to `write` and puts the beets field value into `tags[tag.lower()]`.
 
+## Tests
+
+Run `.venv/bin/pytest`. It must be green before and after every change. So far the suite only holds smoke tests; the plugin's behaviour is not covered yet.
+
+Fixtures in `tests/conftest.py`:
+
+- `mp3_factory(*frames, name="test.mp3")` writes a synthetic MP3 into `tmp_path`, tagged with the given `mutagen.id3` frames, and returns its `Path`. Pass `bytes(path)` to `Item.from_path`.
+- `plugin(config=None)` resets `beets.config`, sets `beets.config["id3extract"]` to the given dict, instantiates `ID3ExtractPlugin` and installs it as the only loaded plugin. On teardown it removes the MediaFile properties, `Item._media_fields` entries and event listeners the plugin registered, and clears beets' `cached_classproperty` cache. Always create the plugin through this fixture, or registrations leak into other tests.
+- `lib` is a `Library(":memory:")` with the working directory switched to `tmp_path`, because the library drops `:memory:-before-*.bak` files into the working directory.
+
 ## Known defects
 
 All reproduced against the versions listed above.
@@ -69,6 +82,8 @@ All reproduced against the versions listed above.
 
 - `BeetsPlugin.add_media_field(name, descriptor)` adds the descriptor to the `MediaFile` class and `name` to `Item._media_fields`. From then on `Item.read()` (import, `beet update`) and `Item.write()` (`beet write`, `beet modify`) sync `item[name]` with the tag without any listener.
 - `MediaFile.add_field` is class-global and permanent for the process, and raises `ValueError` if the name exists. Tests must isolate or undo registrations.
+- Event listeners live in the class-level dicts `BeetsPlugin.listeners` and `BeetsPlugin._raw_listeners`, and `plugins.send` dispatches to them whether or not the plugin is in `plugins._instances`. A plugin instance that is merely dropped keeps receiving events.
+- `beets.util.cached_classproperty` caches per class in `cached_classproperty.cache` (for example `Item._types`, `Item._queries`); clear it after changing the set of loaded plugins.
 - `Item.write()` builds `tags` from media fields only, sends the `write` event, then calls `MediaFile.update(tags)`. A value of `None` deletes the tag.
 - In a `StorageStyle`, override `fetch`/`store` (raw mutagen access) and `serialize`/`deserialize` (value conversion), not `get`/`set`.
 - Stock `MP3StorageStyle.fetch` reads `frame.text[0]` and does not catch `AttributeError`, so it cannot be pointed at `W***` frames. `MP3DescStorageStyle(desc, key="TXXX")` handles `TXXX:DESC`; with `key="WXXX", attr="url", multispec=False` it handles `WXXX:DESC`.

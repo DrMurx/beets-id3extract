@@ -17,6 +17,11 @@ setup(
         'mediafile',
         'mutagen',
     ],
+    extras_require={
+        'dev': [
+            'pytest',
+        ],
+    },
     classifiers=[
         'Topic :: Multimedia :: Sound/Audio',
         'Topic :: Multimedia :: Sound/Audio :: Players :: MP3',
@@ -29,4 +34,4 @@ setup(
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
     ],
-) 
+)
