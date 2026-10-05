@@ -96,9 +96,18 @@ WOAS: "https://open.spotify.com/track/2BOUrjXoRIo2YHVAyZyXVX"
 
 | Preset | Recognised URLs | Written as |
 | --- | --- | --- |
-| `spotify-track` | `http(s)://open.spotify.com/track/<id>`, also with a language prefix such as `/intl-de/` and with a query string | `https://open.spotify.com/track/<id>` |
+| `spotify-track` | `open.spotify.com/track/<id>`, also with a language prefix such as `/intl-de/` | `https://open.spotify.com/track/<id>` |
+| `deezer-track` | `www.deezer.com/track/<id>`, also with a language prefix such as `/de/` | `https://www.deezer.com/track/<id>` |
+| `tidal-track` | `tidal.com/track/<id>`, `tidal.com/browse/track/<id>`, `listen.tidal.com/track/<id>` | `https://tidal.com/track/<id>` |
+| `qobuz-track` | `open.qobuz.com/track/<id>`, `play.qobuz.com/track/<id>` | `https://open.qobuz.com/track/<id>` |
+| `youtube-video` | `www.youtube.com/watch?v=<id>`, `music.youtube.com/watch?v=<id>`, `youtu.be/<id>` | `https://www.youtube.com/watch?v=<id>` |
+| `soundcloud-track` | `soundcloud.com/<user>/<track>`, also on `m.soundcloud.com` | `https://soundcloud.com/<user>/<track>` |
 
-`spotify_track_id` is the field beets' own `spotify` plugin uses, so the two work together; any other field name is fine too.
+All presets accept `http` and `https`, and ignore a query string or anything else after the ID.
+
+- `spotify_track_id` and `deezer_track_id` are the fields beets' own `spotify` and `deezer` plugins use, so they work together; any other field name is fine too.
+- SoundCloud URLs have no numeric ID, so the ID is `<user>/<track>`, for example `forss/flickermood`. Playlists (`<user>/sets/...`), private links (`.../s-<token>`) and short links (`on.soundcloud.com/...`) are not recognised and are kept as they are.
+- A YouTube Music link is written back as a regular `www.youtube.com` link.
 
 For other services, give the two directions yourself:
 

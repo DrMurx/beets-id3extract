@@ -21,13 +21,68 @@ PRESET_CASES = {
         (f"http://open.spotify.com/track/{SPOTIFY_ID}", SPOTIFY_ID, SPOTIFY_URL),
         (f"https://open.spotify.com/intl-de/track/{SPOTIFY_ID}?si=abc123", SPOTIFY_ID, SPOTIFY_URL),
     ],
+    "deezer-track": [
+        ("https://www.deezer.com/track/3135556", "3135556", "https://www.deezer.com/track/3135556"),
+        ("https://www.deezer.com/de/track/3135556?utm_source=x", "3135556", "https://www.deezer.com/track/3135556"),
+        ("http://deezer.com/track/3135556", "3135556", "https://www.deezer.com/track/3135556"),
+    ],
+    "tidal-track": [
+        ("https://tidal.com/track/234834560", "234834560", "https://tidal.com/track/234834560"),
+        ("https://tidal.com/track/234834560/u", "234834560", "https://tidal.com/track/234834560"),
+        ("https://tidal.com/browse/track/79930135", "79930135", "https://tidal.com/track/79930135"),
+        ("https://listen.tidal.com/track/79930135", "79930135", "https://tidal.com/track/79930135"),
+    ],
+    "qobuz-track": [
+        ("https://open.qobuz.com/track/49282452", "49282452", "https://open.qobuz.com/track/49282452"),
+        ("https://play.qobuz.com/track/49282452", "49282452", "https://open.qobuz.com/track/49282452"),
+    ],
+    "youtube-video": [
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        ("https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        ("https://www.youtube.com/watch?list=PL1&v=a_b-c1d2e3F", "a_b-c1d2e3F", "https://www.youtube.com/watch?v=a_b-c1d2e3F"),
+        ("https://music.youtube.com/watch?v=dQw4w9WgXcQ&si=x", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        ("https://youtu.be/dQw4w9WgXcQ?si=x", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ],
+    "soundcloud-track": [
+        ("https://soundcloud.com/forss/flickermood", "forss/flickermood", "https://soundcloud.com/forss/flickermood"),
+        ("https://soundcloud.com/forss/flickermood?si=abc&utm_source=clipboard", "forss/flickermood", "https://soundcloud.com/forss/flickermood"),
+        ("https://m.soundcloud.com/forss/flickermood/", "forss/flickermood", "https://soundcloud.com/forss/flickermood"),
+        ("http://www.soundcloud.com/some-user_1/a-track-2#t=1:00", "some-user_1/a-track-2", "https://soundcloud.com/some-user_1/a-track-2"),
+    ],
+}
+
+# Preset name -> tag values the preset must leave alone
+PRESET_FOREIGN = {
+    "spotify-track": [
+        "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
+        "https://example.com/track/42",
+        "spotify:track:2BOUrjXoRIo2YHVAyZyXVX",
+    ],
+    "deezer-track": ["https://www.deezer.com/album/302127", "https://www.deezer.com/track/abc", "https://example.com/track/1"],
+    "tidal-track": ["https://tidal.com/album/77646168", "https://tidal.com/browse/album/1", "https://example.com/track/1"],
+    "qobuz-track": ["https://open.qobuz.com/album/0060254788359", "https://www.qobuz.com/track/1"],
+    "youtube-video": [
+        "https://www.youtube.com/playlist?list=PL1234567890",
+        "https://www.youtube.com/watch?v=tooshort",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQtoolong",
+        "https://www.youtube.com/watch?vv=dQw4w9WgXcQ",
+        "https://www.youtube.com/@channel",
+    ],
+    "soundcloud-track": [
+        "https://soundcloud.com/forss",
+        "https://soundcloud.com/forss/sets/soulhack",
+        "https://soundcloud.com/forss/tracks",
+        "https://soundcloud.com/forss/flickermood/s-AbCdEf",
+        "https://on.soundcloud.com/AbCdEf",
+    ],
 }
 
 # Presets
 
 
-def test_every_preset_has_round_trip_cases():
+def test_every_preset_has_cases():
     assert set(PRESET_CASES) == set(URL_PRESETS)
+    assert set(PRESET_FOREIGN) == set(URL_PRESETS)
 
 
 @pytest.mark.parametrize(
@@ -49,15 +104,11 @@ def test_preset_round_trip(plugin, lib, mp3_factory, preset, url, tag_id, canoni
 
 
 @pytest.mark.parametrize(
-    "url",
-    [
-        "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
-        "https://example.com/track/42",
-        "spotify:track:2BOUrjXoRIo2YHVAyZyXVX",
-    ],
+    "preset, url",
+    [(preset, url) for preset, urls in PRESET_FOREIGN.items() for url in urls],
 )
-def test_preset_keeps_foreign_value_unchanged(plugin, lib, mp3_factory, url):
-    plugin({"fields": {"link_id": {"tag": "WOAS", "url": "spotify-track"}}})
+def test_preset_keeps_foreign_value_unchanged(plugin, lib, mp3_factory, preset, url):
+    plugin({"fields": {"link_id": {"tag": "WOAS", "url": preset}}})
     path = mp3_factory(WOAS(url=url))
 
     item = import_item(lib, path)
@@ -65,6 +116,21 @@ def test_preset_keeps_foreign_value_unchanged(plugin, lib, mp3_factory, url):
 
     write_item(item)
     assert read_frames(path)["WOAS"].url == url
+
+
+@pytest.mark.parametrize(
+    "preset, tag_id, canonical",
+    sorted({(preset, tag_id, canonical) for preset, cases in PRESET_CASES.items() for _, tag_id, canonical in cases}),
+)
+def test_preset_writes_id_as_url(plugin, lib, mp3_factory, preset, tag_id, canonical):
+    plugin({"fields": {"link_id": {"tag": "WOAS", "url": preset}}})
+    path = mp3_factory()
+
+    item = import_item(lib, path)
+    item["link_id"] = tag_id
+    write_item(item)
+
+    assert read_frames(path)["WOAS"].url == canonical
 
 
 # extract and format
@@ -198,7 +264,7 @@ def test_extract_without_format_never_changes_the_file(plugin, lib, mp3_factory,
 @pytest.mark.parametrize(
     "options, message",
     [
-        ({"url": "nope"}, r"unknown url preset 'nope', expected one of spotify-track"),
+        ({"url": "nope"}, r"unknown url preset 'nope', expected one of spotify-track, deezer-track"),
         ({"url": "spotify-track", "extract": "(?P<id>.+)"}, r"'url' cannot be combined"),
         ({"url": "spotify-track", "format": "{id}"}, r"'url' cannot be combined"),
         ({"format": "x/{id}"}, r"'format' needs 'extract'"),

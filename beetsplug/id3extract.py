@@ -67,6 +67,32 @@ URL_PRESETS = {
         r'^https?://open\.spotify\.com/(?:intl-[a-z]+/)?track/(?P<id>[A-Za-z0-9]+)',
         'https://open.spotify.com/track/{id}',
     ),
+    'deezer-track': (
+        r'^https?://(?:www\.)?deezer\.com/(?:[a-z]{2}/)?track/(?P<id>\d+)',
+        'https://www.deezer.com/track/{id}',
+    ),
+    'tidal-track': (
+        r'^https?://(?:www\.|listen\.)?tidal\.com/(?:browse/)?track/(?P<id>\d+)',
+        'https://tidal.com/track/{id}',
+    ),
+    'qobuz-track': (
+        r'^https?://(?:open|play)\.qobuz\.com/track/(?P<id>\d+)',
+        'https://open.qobuz.com/track/{id}',
+    ),
+    'youtube-video': (
+        r'^https?://(?:(?:www\.|m\.|music\.)?youtube\.com/watch\?(?:[^#]*&)?v=|youtu\.be/)'
+        r'(?P<id>[A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])',
+        'https://www.youtube.com/watch?v={id}',
+    ),
+    # The ID is `<user>/<track>`. Playlists and other pages of a user are not
+    # tracks, and a private link (`<user>/<track>/s-<token>`) cannot be
+    # rebuilt from that ID, so neither matches.
+    'soundcloud-track': (
+        r'^https?://(?:www\.|m\.)?soundcloud\.com/(?P<id>[^/?#]+/'
+        r'(?!(?:sets|tracks|albums|popular-tracks|reposts|likes|followers|following|comments)(?:[/?#]|$))'
+        r'[^/?#]+)/?(?:[?#]|$)',
+        'https://soundcloud.com/{id}',
+    ),
 }
 
 
