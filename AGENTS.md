@@ -50,6 +50,9 @@ id3extract:
         energy:                   # long form
             tag: TDLY
             type: int             # str (default), int, float, bool
+        initial_key_raw:
+            tag: TKEY
+            share_tag: yes        # TKEY is already used by beets' initial_key
     mappings:                     # deprecated: <tag>: <beets field>
         WOAS: track_id
 ```
@@ -57,10 +60,9 @@ id3extract:
 `ID3ExtractPlugin.__init__` does everything; the plugin has no listeners and no commands.
 
 1. `_configured_fields` merges `fields` and the legacy `mappings` into `{field: (config key, options)}`. The config key (`id3extract.fields.mood`, `id3extract.mappings.WOAS`) prefixes every error message. Any use of `mappings` logs a deprecation warning. A legacy entry whose tag is `WOAS` gets the internal option `spotify_id`, which users cannot set through `fields`.
-2. Every entry is validated before anything is registered, so a bad config registers nothing. All failures are `UserError`:
-   - the field is an attribute of `MediaFile` or a fixed `Item` field (`title`, `bitrate`, `path`, ...);
-   - unknown option, missing `tag`, unknown `type`;
-   - the tag does not parse (`parse_tag_spec`), or is already mapped to another field.
+2. Every entry is validated before anything is registered, so a bad config registers nothing.
+   - Collisions with beets raise `ConflictError`, which derives from `SystemExit` so that beets' plugin loader cannot swallow it: beets prints `id3extract: error: …` and exits with status 1. There are two: the field is an attribute of `MediaFile` or a fixed `Item` field (`title`, `bitrate`, `path`, ...), or the tag is already used by a `MediaFile` field (`beets_field_for_frame`, for example `TKEY` → `initial_key`). The second one is skipped for a field with `share_tag: yes`; the first has no override. Legacy `mappings` entries cannot set `share_tag`.
+   - Everything else is a `UserError`: unknown option, missing `tag`, unknown `type`, non-boolean `share_tag`, a tag that does not parse (`parse_tag_spec`) or is already mapped to another configured field.
 3. `parse_tag_spec` upper-cases the frame ID, looks it up in `mutagen.id3.Frames` and returns `(kind, frame_id, desc)`. `kind` is `text` for `T***` frames that are `TextFrame` subclasses and `url` for `W***` frames that are `UrlFrame` subclasses. `TXXX`, `WXXX`, anything with a `:` and every other frame (`COMM`, `TIPL`, `APIC`, ...) is rejected as not supported yet.
 4. Each field is registered under the **beets field name** through `add_media_field` with a `TagField`:
    - MP3: stock `MP3StorageStyle(frame_id)` for text, `MP3URLStorageStyle(frame_id)` for URL frames (overrides `fetch`/`store`);
@@ -75,7 +77,7 @@ id3extract:
 
 Run `.venv/bin/pytest`. It must be green before and after every change. Only MP3 files are covered; the MP4 and Vorbis storage styles are untested.
 
-- `tests/test_fields.py` covers the `fields` option: read, unchanged write and changed write per tag kind and per `type`, `item.read()` after an edit outside beets, numeric queries, the warning for tags beets uses itself, and one parametrised case per validation error.
+- `tests/test_fields.py` covers the `fields` option: read, unchanged write and changed write per tag kind and per `type`, `item.read()` after an edit outside beets, numeric queries, `ConflictError` for fields and tags beets uses itself, `share_tag`, and one parametrised case per validation error.
 - `tests/test_legacy_mappings.py` covers `mappings`: the deprecation warning, combination with `fields`, and Spotify ID extraction from `WOAS` (including query strings, and not for other frames).
 - `tests/test_defects.py` holds the entries of "Known defects" that have a planned fix, written against the *desired* behaviour and marked `@pytest.mark.xfail(strict=True, reason="fixed in step N")`. Because the marker is strict, the test fails as soon as the defect is fixed; in the change that fixes it, remove the marker and move the test to the regular suite. `pytest --runxfail tests/test_defects.py` shows how each one fails today.
 - Tests import, write and inspect files through `tests/helpers.py` (`import_item`, `write_item`, `read_frames`) rather than calling beets themselves.
@@ -93,8 +95,7 @@ All reproduced against the versions listed above.
 
 - **The legacy Spotify round trip is lossy.** With `mappings: {WOAS: field}` the URL is reduced to an ID on read, and the next write stores the bare ID in `WOAS`, replacing the URL. The bare ID reads back as the same ID, so database and file stay consistent. (xfail test)
 - **`TXXX:<DESC>` and `WXXX:<DESC>` are rejected** as not supported yet. (xfail tests)
-- **A tag that beets also uses is fought over.** Mapping, say, `TKEY` creates a second field next to beets' `initial_key`, and both are written to the same frame. `MediaFile.update` writes fields in alphabetical order, so the later name wins: with differing values, a field sorting before the beets field is overwritten by the stale beets value, and one sorting after it overwrites a `beet modify` of the beets field. A `None` in the later field deletes the frame. The plugin only logs a warning (`beets_field_for_frame`).
-- **Existing items are not backfilled.** `beet update` skips files whose mtime has not changed, so items imported before a field was configured keep it unset until the file changes. There is no command to force a re-read.
+- **A tag shared through `share_tag: yes` is fought over.** Mapping, say, `TKEY` creates a second field next to beets' `initial_key`, and both are written to the same frame. `MediaFile.update` writes fields in alphabetical order, so the later name wins: with differing values, a field sorting before the beets field is overwritten by the stale beets value, and one sorting after it overwrites a `beet modify` of the beets field. A `None` in the later field deletes the frame. This is why sharing is refused by default.
 - **No field name validation.** A field name that beets cannot query (containing `:` or spaces) is accepted.
 - `beet modify 'field!'` removes the field from the database but not the tag from the file (the key is absent from `tags`, so the tag is left alone). This is how beets treats every plugin media field.
 
@@ -105,6 +106,7 @@ All reproduced against the versions listed above.
 - Event listeners live in the class-level dicts `BeetsPlugin.listeners` and `BeetsPlugin._raw_listeners`, and `plugins.send` dispatches to them whether or not the plugin is in `plugins._instances`. A plugin instance that is merely dropped keeps receiving events.
 - `beets.util.cached_classproperty` caches per class in `cached_classproperty.cache` (for example `Item._types`, `Item._queries`); clear it after changing the set of loaded plugins.
 - `Item.write()` builds `tags` from media fields only, sends the `write` event, then calls `MediaFile.update(tags)`. A value of `None` deletes the tag; a key missing from the item leaves the tag untouched. `MediaFile.update` goes through the fields in alphabetical order.
+- `beet update` skips files whose mtime has not changed, so items imported before a media field existed keep it unset until the file changes. This holds for every plugin that adds media fields and is expected.
 - `Item.read()` assigns every media field, so a missing tag sets the field to the null value of its beets type: `None` for untyped flexible fields, `NullInteger` and `NULL_FLOAT`, but `0`, `False` and `""` for `INTEGER`, `BOOLEAN` and `STRING`.
 - `MediaField.__get__` returns `None` for a missing tag whatever the `out_type`. `StorageStyle.serialize` formats floats with `float_places=2`.
 - beets 2.14 catches every exception from a plugin's `__init__`, logs it with a traceback as `** error loading plugin` and carries on without the plugin, exit code 0. A `UserError` from the plugin therefore does not abort the command.
@@ -119,7 +121,7 @@ All reproduced against the versions listed above.
 
 - Keep the plugin a single module unless it clearly outgrows that.
 - Log through `self._log` with `{}` placeholders (beets style), never `print`.
-- Report configuration mistakes as `beets.ui.UserError` naming the offending key; do not swallow them.
+- Report configuration mistakes as `beets.ui.UserError` naming the offending key; do not swallow them. Collisions with fields or tags that beets uses itself are `ConflictError` and must stop beets.
 - Never write a file tag in a form that cannot be read back to the same database value. Add a round-trip test for every new tag kind.
 - Config changes are user-facing: update `README.md` and the module docstring in the same change.
 - Do not commit or push unless asked.

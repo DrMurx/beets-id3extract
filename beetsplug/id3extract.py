@@ -25,6 +25,9 @@ Configuration:
     WXXX frames are not supported yet. On MP4 files the tag is stored as
     `----:com.apple.iTunes:<TAG>`, on Vorbis-style formats as `<TAG>`.
 
+    A field or tag that beets already uses itself aborts beets. For a tag
+    this can be overridden per field with `share_tag: yes`.
+
     The former `mappings` option (`<tag>: <beets field>`) is deprecated but
     still read. A `WOAS` mapping keeps reducing Spotify track URLs to the
     track ID.
@@ -39,6 +42,17 @@ from beets.ui import UserError
 from mediafile import MediaField, MediaFile, MP3StorageStyle, MP4StorageStyle, StorageStyle
 
 SPOTIFY_TRACK_URL = 'https://open.spotify.com/track/'
+
+
+class ConflictError(SystemExit):
+    """A configured field or tag collides with one beets uses itself.
+
+    beets catches every `Exception` raised while a plugin loads and carries on
+    without the plugin. A conflict must stop beets instead, so this derives
+    from `SystemExit`: the message is printed and beets exits with status 1.
+    """
+    def __init__(self, message):
+        super(ConflictError, self).__init__(f'id3extract: error: {message}')
 
 
 class NullBoolean(types.Boolean):
@@ -138,11 +152,11 @@ class ID3ExtractPlugin(BeetsPlugin):
         fields_by_frame = {}
         for field, (key, options) in self._configured_fields().items():
             if field in vars(MediaFile) or field in Item._fields:
-                raise UserError(
-                    f"{key}: '{field}' is already a beets field; mapping onto beets' own fields is not supported"
+                raise ConflictError(
+                    f"{key}: '{field}' is already a beets field; choose another field name"
                 )
 
-            unknown = set(options) - {'tag', 'type', 'spotify_id'}
+            unknown = set(options) - {'tag', 'type', 'share_tag', 'spotify_id'}
             if unknown:
                 raise UserError(f"{key}: unknown option '{sorted(unknown)[0]}'")
             tag = options.get('tag')
@@ -167,13 +181,18 @@ class ID3ExtractPlugin(BeetsPlugin):
             if item_type is not None:
                 self.item_types[field] = item_type
 
+            share_tag = options.get('share_tag', False)
+            if not isinstance(share_tag, bool):
+                raise UserError(f"{key}: 'share_tag' must be yes or no")
             owner = beets_field_for_frame(frame_id)
-            if owner:
-                self._log.warning(
-                    "{}: tag {} is also written by the beets field '{}'; "
-                    'if the two fields differ, either value may end up in the file',
-                    key, frame_id, owner
+            if owner and not share_tag:
+                raise ConflictError(
+                    f"{key}: tag {frame_id} is already used by the beets field '{owner}'; "
+                    f"use that field, or set 'share_tag: yes' under id3extract.fields.{field} "
+                    'to map the tag a second time'
                 )
+            if owner:
+                self._log.debug("{}: sharing tag {} with the beets field '{}'", key, frame_id, owner)
             media_fields[field] = TagField(kind, frame_id, out_type, options.get('spotify_id', False))
 
         for field, descriptor in media_fields.items():

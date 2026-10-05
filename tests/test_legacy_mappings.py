@@ -3,8 +3,9 @@
 import pytest
 from beets.library import Item
 from beets.ui import UserError
+from beetsplug.id3extract import ConflictError
 from helpers import SPOTIFY_ID, SPOTIFY_URL, import_item, read_frames, write_item
-from mutagen.id3 import TIT2, TKEY, TMOO, WOAF, WOAS
+from mutagen.id3 import TIT2, TMOO, WOAF, WOAS
 
 # Config
 
@@ -42,9 +43,14 @@ def test_field_in_both_mappings_and_fields_is_a_user_error(plugin):
         plugin({"mappings": {"WOAS": "track_id"}, "fields": {"track_id": "WOAF"}})
 
 
-@pytest.mark.parametrize("mappings", [{"TITLE": "x"}, {"TMOO": "title"}])
-def test_collision_with_mediafile_property_is_a_user_error(plugin, mappings):
-    with pytest.raises(UserError, match=r"id3extract\.mappings\."):
+def test_unknown_tag_is_a_user_error(plugin):
+    with pytest.raises(UserError, match=r"id3extract\.mappings\.TITLE"):
+        plugin({"mappings": {"TITLE": "x"}})
+
+
+@pytest.mark.parametrize("mappings", [{"TMOO": "title"}, {"TKEY": "mykey"}])
+def test_collision_with_beets_aborts(plugin, mappings):
+    with pytest.raises(ConflictError, match=r"id3extract\.mappings\."):
         plugin({"mappings": mappings})
 
 
@@ -106,12 +112,12 @@ def test_no_shadow_field_named_after_tag(plugin, lib, mp3_factory):
 
 
 def test_text_frame_is_read(plugin, lib, mp3_factory):
-    plugin({"mappings": {"TKEY": "mykey"}})
-    path = mp3_factory(TKEY(encoding=3, text=["Am"]))
+    plugin({"mappings": {"TMOO": "mood"}})
+    path = mp3_factory(TMOO(encoding=3, text=["calm"]))
 
     item = import_item(lib, path)
 
-    assert item["mykey"] == "Am"
+    assert item["mood"] == "calm"
 
 
 def test_absent_tag_leaves_field_empty(plugin, lib, mp3_factory):
@@ -158,13 +164,13 @@ def test_write_without_value_adds_no_frame(plugin, lib, mp3_factory):
 
 
 def test_unchanged_write_keeps_text_frame(plugin, lib, mp3_factory):
-    plugin({"mappings": {"TKEY": "mykey"}})
-    path = mp3_factory(TKEY(encoding=3, text=["Am"]))
+    plugin({"mappings": {"TMOO": "mood"}})
+    path = mp3_factory(TMOO(encoding=3, text=["calm"]))
 
     item = import_item(lib, path)
     write_item(item)
 
-    assert read_frames(path)["TKEY"].text == ["Am"]
+    assert read_frames(path)["TMOO"].text == ["calm"]
 
 
 def test_changed_write_produces_text_frame(plugin, lib, mp3_factory):

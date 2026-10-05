@@ -4,6 +4,7 @@ import pytest
 from beets import dbcore
 from beets.library import Item
 from beets.ui import UserError
+from beetsplug.id3extract import ConflictError
 from helpers import import_item, read_frames, write_item
 from mutagen.id3 import ID3, TDLY, TKEY, TMOO, WOAF, WOAS
 
@@ -170,30 +171,50 @@ def test_typed_field_declares_item_type(plugin):
     assert isinstance(Item._types["energy"], dbcore.types.NullInteger)
 
 
-# Tags that beets uses itself
+# Collisions with beets' own fields and tags
 
 
-def test_tag_shared_with_beets_field_logs_a_warning(plugin, caplog):
-    plugin({"fields": {"mykey": "TKEY"}})
+@pytest.mark.parametrize("field", ["title", "bitrate", "path"])
+def test_field_that_beets_has_aborts(plugin, field):
+    with pytest.raises(ConflictError, match=rf"id3extract\.fields\.{field}: '{field}' is already a beets field"):
+        plugin({"fields": {field: "TMOO"}})
 
-    assert "id3extract.fields.mykey" in caplog.text
-    assert "'initial_key'" in caplog.text
+
+@pytest.mark.parametrize("field", ["akey", "mykey"])
+def test_tag_that_beets_uses_aborts(plugin, field):
+    with pytest.raises(ConflictError, match=rf"id3extract\.fields\.{field}: tag TKEY .* 'initial_key'"):
+        plugin({"fields": {field: "TKEY"}})
+
+    assert field not in Item._media_fields
 
 
-def test_tag_shared_with_beets_field_is_read(plugin, lib, mp3_factory):
-    plugin({"fields": {"mykey": "TKEY"}})
+def test_conflict_is_not_swallowed_by_plugin_loading():
+    # beets catches `Exception` around plugin instantiation.
+    assert not issubclass(ConflictError, Exception)
+    assert ConflictError("x").code == "id3extract: error: x"
+
+
+def test_share_tag_allows_tag_that_beets_uses(plugin, lib, mp3_factory, caplog):
+    plugin({"fields": {"mykey": {"tag": "TKEY", "share_tag": True}}})
     path = mp3_factory(TKEY(encoding=3, text=["Am"]))
 
     item = import_item(lib, path)
 
     assert item["mykey"] == "Am"
     assert item["initial_key"] == "Am"
-
-
-def test_other_tag_logs_no_warning(plugin, caplog):
-    plugin({"fields": {"mood": "TMOO"}})
-
     assert caplog.text == ""
+
+
+def test_share_tag_is_ignored_for_other_tags(plugin, lib, mp3_factory):
+    plugin({"fields": {"mood": {"tag": "TMOO", "share_tag": True}}})
+    path = mp3_factory(TMOO(encoding=3, text=["calm"]))
+
+    assert import_item(lib, path)["mood"] == "calm"
+
+
+def test_share_tag_does_not_allow_field_that_beets_has(plugin):
+    with pytest.raises(ConflictError):
+        plugin({"fields": {"title": {"tag": "TMOO", "share_tag": True}}})
 
 
 # Validation
@@ -216,9 +237,7 @@ def test_other_tag_logs_no_warning(plugin, caplog):
         ({"fields": {"link": "WXXX:LINK"}}, r"id3extract\.fields\.link: WXXX .* not supported yet"),
         ({"fields": {"note": "COMM"}}, r"id3extract\.fields\.note: COMM frames are not supported yet"),
         ({"fields": {"people": "TIPL"}}, r"id3extract\.fields\.people: TIPL frames are not supported yet"),
-        ({"fields": {"title": "TMOO"}}, r"id3extract\.fields\.title: 'title' is already a beets field"),
-        ({"fields": {"bitrate": "TMOO"}}, r"id3extract\.fields\.bitrate: 'bitrate' is already a beets field"),
-        ({"fields": {"path": "TMOO"}}, r"id3extract\.fields\.path: 'path' is already a beets field"),
+        ({"fields": {"mood": {"tag": "TMOO", "share_tag": "TKEY"}}}, r"id3extract\.fields\.mood: 'share_tag' must be yes or no"),
         ({"fields": {"mood": "TMOO", "mood2": "tmoo"}}, r"id3extract\.fields\.mood2: tag TMOO is already mapped to 'mood'"),
         ({"mappings": {"TXXX:FOO": "foo"}}, r"id3extract\.mappings\.TXXX:FOO: TXXX"),
     ],

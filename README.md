@@ -44,13 +44,14 @@ id3extract:
 ```
 
 Each entry consists of:
-- Key: the beets field. It must not be a field beets already has (`title`, `initial_key`, ...).
+- Key: the beets field. It must not be a field beets already has (`title`, `initial_key`, ...); see [Conflicts with beets](#conflicts-with-beets).
 - Value: either the tag, or a mapping with these options:
 
 | Option | Meaning |
 | --- | --- |
 | `tag` | The tag to read and write. Required. |
 | `type` | `str` (default), `int`, `float` or `bool`. Typed fields can be queried and sorted numerically, for example `beet ls energy:5..`. |
+| `share_tag` | `yes` to map a tag that beets already uses for a field of its own. Default `no`. See [Conflicts with beets](#conflicts-with-beets). |
 
 ### Tags
 
@@ -63,7 +64,28 @@ Other frames, including `TXXX:<description>`, are not supported yet. Each tag ca
 
 On MP4 files the tag is stored as the freeform atom `----:com.apple.iTunes:<TAG>`, and on Vorbis-style formats (FLAC, Ogg, APE, ...) as a comment named `<TAG>`.
 
-Avoid tags that beets already uses for a field of its own, such as `TKEY` (`initial_key`) or `TBPM` (`bpm`). Both fields are then written to the same frame, and if their values differ it is not defined which one ends up in the file. The plugin logs a warning for such a tag.
+### Conflicts with beets
+
+beets refuses to start, with an error naming the config key, if
+
+- a configured field is a field beets already has, or
+- a configured tag is one beets already uses for a field of its own, such as `TKEY` (`initial_key`) or `TBPM` (`bpm`).
+
+This also protects you when a new beets release starts using a field name or tag that you have mapped: beets stops before it touches any file, and you can rename your field or switch to the new beets field.
+
+For a tag, you can override the check per field:
+
+```yaml
+id3extract:
+    fields:
+        initial_key_raw:
+            tag: TKEY
+            share_tag: yes
+```
+
+Both fields are then read from the same frame and both are written to it. If their values differ, for example after `beet modify` changed only one of them, the field whose name comes later in the alphabet ends up in the file, and an empty value in that field removes the frame. Only use `share_tag` for fields you do not edit.
+
+There is no override for a field name that beets already has.
 
 ### Migrating from `mappings`
 
@@ -87,6 +109,7 @@ Differences to be aware of:
 
 - A `WOAS` entry under `mappings` still reduces a Spotify track URL (`https://open.spotify.com/track/2BOUrjXoRIo2YHVAyZyXVX`) to the track ID (`2BOUrjXoRIo2YHVAyZyXVX`). Under `fields` the URL is stored unchanged.
 - Tags that are not ID3 text or URL frame IDs are now rejected.
+- Tags that beets uses itself are now rejected, and `mappings` has no way to allow them. Move the entry to `fields` and set `share_tag: yes`.
 - Earlier versions also created a field named after the tag (for example `woas`). It is no longer filled; remove leftovers with `beet modify 'woas!'`.
 
 ## Operation
@@ -101,7 +124,7 @@ Each configured field becomes a regular beets media field, so beets keeps it in 
 
 ## Debugging
 
-A configuration mistake is reported when beets starts, naming the offending key, for example `id3extract.fields.mood: unknown ID3 frame 'TMOX'`. Recent beets versions then continue without the plugin.
+A configuration mistake is reported when beets starts, naming the offending key, for example `id3extract.fields.mood: unknown ID3 frame 'TMOX'`. Recent beets versions then continue without the plugin. A [conflict with beets](#conflicts-with-beets) always stops beets.
 
 Run beets with the verbose flag to see which fields are registered:
 
