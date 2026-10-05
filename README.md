@@ -1,12 +1,13 @@
 # ID3Extract Plugin for beets
 
-A [beets](https://beets.io) plugin that maps ID3 text and URL frames to beets custom fields, in both directions. This plugin is particularly useful for preserving tags that beets ignores during your music library management with beets.
+A [beets](https://beets.io) plugin that maps ID3 text and URL frames, including user-defined `TXXX` and `WXXX` frames, to beets custom fields, in both directions. This plugin is particularly useful for preserving tags that beets ignores during your music library management with beets.
 
 ## Use Cases
 
 - Keep the Spotify track ID from a `WOAS` (official audio source) URL in your beets database
 - Keep any other streaming or store URL, or just the ID inside it
 - Preserve ID3 text frames that beets ignores, such as `TMOO` (mood)
+- Preserve the `TXXX` frames that DJ software and taggers write, such as `TXXX:ENERGY`
 - Edit those values with `beet modify` and have them written back to the files
 
 ## Installation
@@ -39,7 +40,7 @@ id3extract:
     fields:
         mood: TMOO              # short form: <beets field>: <tag>
         energy:                 # long form
-            tag: TDLY
+            tag: TXXX:ENERGY
             type: int
         spotify_track_id:
             tag: WOAS
@@ -60,14 +61,18 @@ Each entry consists of:
 
 ### Tags
 
-A tag is the ID of an ID3 frame, in upper or lower case:
+| Tag | Meaning | MP3 (ID3) | MP4 | FLAC, Ogg, APE, ... |
+| --- | --- | --- | --- | --- |
+| `TMOO` | A text frame: any `T***` frame ID | frame `TMOO` | `----:com.apple.iTunes:TMOO` | `TMOO` |
+| `WOAS` | A URL frame: any `W***` frame ID | frame `WOAS` | `----:com.apple.iTunes:WOAS` | `WOAS` |
+| `TXXX:<description>` | A user-defined text frame | `TXXX` frame with that description | `----:com.apple.iTunes:<description>` | `<description>` |
+| `WXXX:<description>` | A user-defined URL frame | `WXXX` frame with that description | `----:com.apple.iTunes:<description>` | `<description>` |
 
-- text frames (`T***`, for example `TMOO`), except `TXXX`
-- URL frames (`W***`, for example `WOAS`), except `WXXX`
-
-Other frames, including `TXXX:<description>`, are not supported yet. Each tag can be mapped to one field only.
-
-On MP4 files the tag is stored as the freeform atom `----:com.apple.iTunes:<TAG>`, and on Vorbis-style formats (FLAC, Ogg, APE, ...) as a comment named `<TAG>`.
+- Frame IDs can be written in upper or lower case.
+- Everything after the first colon is the description, so it may contain spaces and colons: `TXXX:My Tool: Energy`. Quote such a tag in YAML.
+- A description matches an existing frame regardless of case. A frame the plugin has to create gets the spelling from your config.
+- Other frames (`COMM`, `TIPL`, `APIC`, ...) are not supported.
+- Each tag can be mapped to one field only. `TXXX:FOO` and `WXXX:FOO` also count as the same tag, because both are stored as `FOO` in non-MP3 files.
 
 ### URLs and IDs
 
@@ -115,14 +120,14 @@ How values are converted:
 - **A value that does not match is left alone.** If the tag holds something `extract` does not match, such as a URL of another service, the field gets the whole value, and the same value is written back unchanged.
 - You can set the field to a full URL (`beet modify spotify_track_id=https://open.spotify.com/track/...`). The tag is written in the `format` form, and the field shows the ID after the next `beet update`.
 - `extract` without `format` makes the field read-only: the ID is read, but the plugin never changes or removes the tag. A warning is logged at startup.
-- These options work with any supported tag, not only URL frames, but only with `type: str`.
+- These options work with any tag, including `TXXX:<description>`, but only with `type: str`.
 
 ### Conflicts with beets
 
 beets refuses to start, with an error naming the config key, if
 
 - a configured field is a field beets already has, or
-- a configured tag is one beets already uses for a field of its own, such as `TKEY` (`initial_key`) or `TBPM` (`bpm`).
+- a configured tag is one beets already uses for a field of its own, such as `TKEY` (`initial_key`), `TBPM` (`bpm`) or `TXXX:ASIN` (`asin`). This includes tags that only collide in non-MP3 files: `TXXX:BPM` would be stored as `BPM` in a FLAC file, where beets keeps its `bpm` field.
 
 This also protects you when a new beets release starts using a field name or tag that you have mapped: beets stops before it touches any file, and you can rename your field or switch to the new beets field.
 
@@ -162,7 +167,7 @@ Differences to be aware of:
 
 - A `WOAS` entry under `mappings` is treated as `url: spotify-track` (see [URLs and IDs](#urls-and-ids)), as before. Under `fields` you have to add that option yourself, otherwise the URL is stored unchanged.
 - Earlier versions wrote the bare Spotify ID back into `WOAS`, replacing the URL. The URL is now written. Files that already hold a bare ID are repaired by the next `beet write`.
-- Tags that are not ID3 text or URL frame IDs are now rejected.
+- Tags that are not ID3 text or URL frames are now rejected. A plain name such as `CUSTOM` was never read from MP3 files; write it as `TXXX:CUSTOM`.
 - Tags that beets uses itself are now rejected, and `mappings` has no way to allow them. Move the entry to `fields` and set `share_tag: yes`.
 - Earlier versions also created a field named after the tag (for example `woas`). It is no longer filled; remove leftovers with `beet modify 'woas!'`.
 

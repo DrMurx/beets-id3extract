@@ -18,7 +18,7 @@ Configuration:
                 spotify_url: WOAS       # short form: <beets field>: <tag>
                 mood: TMOO
                 energy:                 # long form
-                    tag: TDLY
+                    tag: TXXX:ENERGY
                     type: int           # str (default), int, float or bool
                 spotify_track_id:
                     tag: WOAS
@@ -28,9 +28,15 @@ Configuration:
                     extract: '^https://shop[.]example/item/(?P<id>[0-9]+)'
                     format: 'https://shop.example/item/{id}'
 
-    A tag is the ID of an ID3 text frame (T***) or URL frame (W***). TXXX and
-    WXXX frames are not supported yet. On MP4 files the tag is stored as
-    `----:com.apple.iTunes:<TAG>`, on Vorbis-style formats as `<TAG>`.
+    A tag is one of:
+        TMOO            an ID3 text frame (T***)
+        WOAS            an ID3 URL frame (W***)
+        TXXX:<DESC>     a user-defined text frame with that description
+        WXXX:<DESC>     a user-defined URL frame with that description
+
+    On MP4 files the tag is stored as `----:com.apple.iTunes:<NAME>` and on
+    Vorbis-style formats as `<NAME>`, where the name is the description, or
+    the frame ID for frames without one.
 
     A field or tag that beets already uses itself aborts beets. For a tag
     this can be overridden per field with `share_tag: yes`.
@@ -53,7 +59,7 @@ from beets.dbcore import types
 from beets.library import Item
 from beets.plugins import BeetsPlugin
 from beets.ui import UserError
-from mediafile import MediaField, MediaFile, MP3StorageStyle, MP4StorageStyle, StorageStyle
+from mediafile import MediaField, MediaFile, MP3DescStorageStyle, MP3StorageStyle, MP4StorageStyle, StorageStyle
 
 # Preset name -> (extract, format), selected with the `url` option.
 URL_PRESETS = {
@@ -96,30 +102,52 @@ FIELD_TYPES = {
 def parse_tag_spec(spec):
     """Parse a tag spec from the config into `(kind, frame_id, desc)`.
 
-    `kind` is 'text' or 'url'. Raise `ValueError` for specs that are invalid
-    or not supported.
+    `kind` is 'text' or 'url'. `desc` is the description of a TXXX or WXXX
+    frame and `None` for other frames. Raise `ValueError` for specs that are
+    invalid or not supported.
     """
-    frame_id, has_desc, desc = spec.partition(':')
-    frame_id = frame_id.strip().upper()
-    if has_desc or frame_id in ('TXXX', 'WXXX'):
-        raise ValueError(f'{frame_id} frames are not supported yet')
+    # Split on the first colon only: descriptions may contain colons.
+    frame_id, _, desc = spec.partition(':')
+    frame_id, desc = frame_id.strip().upper(), desc.strip()
+    if frame_id in ('TXXX', 'WXXX'):
+        if not desc:
+            raise ValueError(f'{frame_id} needs a description: {frame_id}:<description>')
+        return ('text' if frame_id == 'TXXX' else 'url'), frame_id, desc
     frame_class = mutagen.id3.Frames.get(frame_id)
     if frame_class is None:
         raise ValueError(f"unknown ID3 frame '{spec}'")
+    if desc:
+        raise ValueError(f'{frame_id} frames have no description, only TXXX and WXXX do')
     if frame_id.startswith('T') and issubclass(frame_class, mutagen.id3.TextFrame):
         return 'text', frame_id, None
     if frame_id.startswith('W') and issubclass(frame_class, mutagen.id3.UrlFrame):
         return 'url', frame_id, None
-    raise ValueError(f'{frame_id} frames are not supported yet, only text (T***) and URL (W***) frames')
+    raise ValueError(f'{frame_id} frames are not supported, only text (T***) and URL (W***) frames')
 
 
-def beets_field_for_frame(frame_id):
-    """Return the name of a MediaFile field that already uses the ID3 frame, if any."""
+def tag_location(style):
+    """Return a value that is equal for storage styles reading and writing the same tag.
+
+    It consists of the file formats the style applies to, its key and, for
+    frames selected by description, the description. Keys and descriptions
+    are compared case-insensitively, as mediafile and Vorbis comments do.
+    """
+    key = getattr(style, 'key', None)
+    desc = getattr(style, 'description', None)
+    return (
+        tuple(style.formats),
+        key.lower() if isinstance(key, str) else key,
+        desc.lower() if isinstance(desc, str) else desc,
+    )
+
+
+def beets_tag_locations():
+    """Return `{tag location: field name}` for the fields MediaFile already has."""
+    locations = {}
     for name, descriptor in vars(MediaFile).items():
         for style in getattr(descriptor, '_styles', ()):
-            if isinstance(style, MP3StorageStyle) and style.key == frame_id:
-                return name
-    return None
+            locations.setdefault(tag_location(style), name)
+    return locations
 
 
 class Transform:
@@ -179,16 +207,25 @@ class MP3URLStorageStyle(MP3StorageStyle):
 
 class TagField(MediaField):
     """A media field for one configured tag."""
-    def __init__(self, kind, frame_id, out_type=str, transform=None):
+    def __init__(self, kind, frame_id, desc=None, out_type=str, transform=None):
         self.transform = transform
         self.read_only = transform is not None and transform.read_only
-        mp3_style = MP3URLStorageStyle if kind == 'url' else MP3StorageStyle
-        super(TagField, self).__init__(
-            mp3_style(frame_id, read_only=self.read_only),
-            MP4StorageStyle(f'----:com.apple.iTunes:{frame_id}', read_only=self.read_only),
-            StorageStyle(frame_id, read_only=self.read_only),
-            out_type=out_type
+        options = {'read_only': self.read_only}
+        if desc is None:
+            mp3_style = MP3URLStorageStyle if kind == 'url' else MP3StorageStyle
+            mp3_style = mp3_style(frame_id, **options)
+        elif kind == 'url':
+            mp3_style = MP3DescStorageStyle(desc, key=frame_id, attr='url', multispec=False, **options)
+        else:
+            mp3_style = MP3DescStorageStyle(desc, key=frame_id, **options)
+        # Other formats have no frame IDs; like beets, use the description as the name.
+        name = frame_id if desc is None else desc
+        self.tag_styles = (
+            mp3_style,
+            MP4StorageStyle(f'----:com.apple.iTunes:{name}', **options),
+            StorageStyle(name, **options),
         )
+        super(TagField, self).__init__(*self.tag_styles, out_type=out_type)
 
     def __get__(self, mediafile, owner=None):
         value = super(TagField, self).__get__(mediafile, owner)
@@ -218,7 +255,8 @@ class ID3ExtractPlugin(BeetsPlugin):
         # Validate the whole configuration before registering anything.
         media_fields = {}
         self.item_types = {}
-        fields_by_frame = {}
+        beets_locations = beets_tag_locations()
+        configured_locations = {}
         for field, (key, options) in self._configured_fields().items():
             if field in vars(MediaFile) or field in Item._fields:
                 raise ConflictError(
@@ -232,14 +270,10 @@ class ID3ExtractPlugin(BeetsPlugin):
             if not isinstance(tag, str):
                 raise UserError(f'{key}: a tag is required')
             try:
-                kind, frame_id, _ = parse_tag_spec(tag)
+                kind, frame_id, desc = parse_tag_spec(tag)
             except ValueError as exc:
                 raise UserError(f'{key}: {exc}') from None
-            if frame_id in fields_by_frame:
-                raise UserError(
-                    f"{key}: tag {frame_id} is already mapped to '{fields_by_frame[frame_id]}'"
-                )
-            fields_by_frame[frame_id] = field
+            tag = frame_id if desc is None else f'{frame_id}:{desc}'
 
             type_name = options.get('type', 'str')
             if type_name not in FIELD_TYPES:
@@ -253,22 +287,35 @@ class ID3ExtractPlugin(BeetsPlugin):
             share_tag = options.get('share_tag', False)
             if not isinstance(share_tag, bool):
                 raise UserError(f"{key}: 'share_tag' must be yes or no")
-            owner = beets_field_for_frame(frame_id)
-            if owner and not share_tag:
-                raise ConflictError(
-                    f"{key}: tag {frame_id} is already used by the beets field '{owner}'; "
-                    f"use that field, or set 'share_tag: yes' under id3extract.fields.{field} "
-                    'to map the tag a second time'
-                )
-            if owner:
-                self._log.debug("{}: sharing tag {} with the beets field '{}'", key, frame_id, owner)
 
             transform = self._transform(key, options)
             if transform and out_type is not str:
                 raise UserError(f"{key}: 'url', 'extract' and 'format' need type str, not {type_name}")
             if transform and transform.read_only:
                 self._log.warning("{}: 'extract' without 'format' makes the field read-only", key)
-            media_fields[field] = TagField(kind, frame_id, out_type, transform)
+            descriptor = TagField(kind, frame_id, desc, out_type, transform)
+
+            # The first style is the ID3 one; the others only matter on non-MP3 files.
+            locations = [tag_location(style) for style in descriptor.tag_styles]
+            for index, location in enumerate(locations):
+                other = configured_locations.get(location)
+                if other and index == 0:
+                    raise UserError(f"{key}: tag {tag} is already mapped to '{other}'")
+                if other:
+                    raise UserError(
+                        f"{key}: tag {tag} and the tag of '{other}' are stored under the same name on non-MP3 files"
+                    )
+            owner = next((beets_locations[location] for location in locations if location in beets_locations), None)
+            if owner and not share_tag:
+                raise ConflictError(
+                    f"{key}: tag {tag} is already used by the beets field '{owner}'; "
+                    f"use that field, or set 'share_tag: yes' under id3extract.fields.{field} "
+                    'to map the tag a second time'
+                )
+            if owner:
+                self._log.debug("{}: sharing tag {} with the beets field '{}'", key, tag, owner)
+            configured_locations.update(dict.fromkeys(locations, field))
+            media_fields[field] = descriptor
 
         for field, descriptor in media_fields.items():
             self._log.debug('Registering field {}', field)

@@ -5,7 +5,7 @@ from beets.library import Item
 from beets.ui import UserError
 from beetsplug.id3extract import ConflictError
 from helpers import SPOTIFY_ID, SPOTIFY_URL, import_item, read_frames, write_item
-from mutagen.id3 import TIT2, TMOO, WOAF, WOAS
+from mutagen.id3 import TIT2, TMOO, TXXX, WOAF, WOAS
 
 # Config
 
@@ -204,3 +204,18 @@ def test_changed_write_produces_text_frame(plugin, lib, mp3_factory):
     frames = read_frames(path)
     assert frames["TMOO"].text == ["tense"]
     assert "WOAS" not in frames
+
+
+def test_txxx_frame_round_trip(plugin, lib, mp3_factory):
+    plugin({"mappings": {"TXXX:FOO": "foo"}})
+    path = mp3_factory(TXXX(encoding=3, desc="FOO", text=["bar"]))
+
+    item = import_item(lib, path)
+    assert item["foo"] == "bar"
+
+    write_item(item)
+    assert read_frames(path)["TXXX:FOO"].text == ["bar"]
+
+    item["foo"] = "baz"
+    write_item(item)
+    assert read_frames(path)["TXXX:FOO"].text == ["baz"]
